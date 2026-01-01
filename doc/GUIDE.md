@@ -1,6 +1,6 @@
-# Mini Server 프로젝트 구축 가이드
+# LiteApi 프로젝트 구축 가이드
 
-이 문서는 projectgsi_server (ASP.NET Core Controller 기반)를 분석하여 mini_server (Minimal API 기반)로 재구현하는 전체 과정을 단계별로 설명합니다.
+ASP.NET Core 기반 게임 웹 서버 개발을 위한 LiteApi 구현 가이드입니다.
 
 ---
 
@@ -23,10 +23,10 @@
 ## 프로젝트 개요
 
 ### 목표
-기존 projectgsi_server의 핵심 기능을 Minimal API 방식으로 간결하게 재구현
+기존 모바일 웹 게임서버의 핵심 기능을 Minimal API 방식으로 간결하게 재구현
 
 ### 주요 변경사항
-| 항목 | projectgsi_server | mini_server |
+| 항목 | projectgsi_server | liteapi |
 |------|-------------------|-------------|
 | 아키텍처 | Controller 기반 | **Minimal API** |
 | ORM | Dapper (Micro-ORM) | **Entity Framework Core** |
@@ -42,14 +42,14 @@
 ### 1.1 새 Minimal API 프로젝트 생성
 
 ```bash
-dotnet new webapi -n mini_server -o mini_server --use-minimal-apis
-cd mini_server
+dotnet new webapi -n liteapi -o liteapi --use-minimal-apis
+cd liteapi
 ```
 
 생성되는 기본 파일:
 - `Program.cs` - 메인 진입점
 - `appsettings.json` - 설정 파일
-- `mini_server.csproj` - 프로젝트 파일
+- `liteapi.csproj` - 프로젝트 파일
 
 ### 1.2 기본 구조 확인
 
@@ -81,7 +81,7 @@ mkdir -p Models Services Middleware
 
 **Models/RequestContext.cs**
 ```csharp
-namespace mini_server.Models;
+namespace liteapi.Models;
 
 public class RequestContext
 {
@@ -98,7 +98,7 @@ public class RequestContext
 using Dapper;
 using MySqlConnector;
 
-namespace mini_server.Services;
+namespace liteapi.Services;
 
 public class DbLockService
 {
@@ -176,10 +176,10 @@ public class DbLockService
 
 **Middleware/PacketLockMiddleware.cs**
 ```csharp
-using mini_server.Models;
-using mini_server.Services;
+using liteapi.Models;
+using liteapi.Services;
 
-namespace mini_server.Middleware;
+namespace liteapi.Middleware;
 
 public class PacketLockMiddleware
 {
@@ -243,9 +243,9 @@ public static class PacketLockMiddlewareExtensions
 ### 2.6 Program.cs 업데이트
 
 ```csharp
-using mini_server.Middleware;
-using mini_server.Models;
-using mini_server.Services;
+using liteapi.Middleware;
+using liteapi.Models;
+using liteapi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -303,7 +303,7 @@ app.Run();
 ```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Database=mini_server_db;User=root;Password=your_password;"
+    "DefaultConnection": "Server=localhost;Database=liteapi_db;User=root;Password=your_password;"
   },
   "Lock": {
     "TimeoutSeconds": 30,
@@ -350,7 +350,7 @@ mkdir -p Data
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace mini_server.Models;
+namespace liteapi.Models;
 
 [Table("users")]
 public class User
@@ -390,9 +390,9 @@ public class User
 **Data/AppDbContext.cs**
 ```csharp
 using Microsoft.EntityFrameworkCore;
-using mini_server.Models;
+using liteapi.Models;
 
-namespace mini_server.Data;
+namespace liteapi.Data;
 
 public class AppDbContext : DbContext
 {
@@ -420,9 +420,9 @@ public class AppDbContext : DbContext
 **Services/DbLockService.cs** (업데이트)
 ```csharp
 using Microsoft.EntityFrameworkCore;
-using mini_server.Data;
+using liteapi.Data;
 
-namespace mini_server.Services;
+namespace liteapi.Services;
 
 public class DbLockService
 {
@@ -515,7 +515,7 @@ public class UnlockResult { public int Result { get; set; } }
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
-using mini_server.Data;
+using liteapi.Data;
 
 // ... (기존 코드)
 
@@ -613,7 +613,7 @@ Logging:
 AllowedHosts: "*"
 
 ConnectionStrings:
-  DefaultConnection: "Server=localhost;Database=mini_server_db;User=root;Password=your_password;"
+  DefaultConnection: "Server=localhost;Database=liteapi_db;User=root;Password=your_password;"
 
 Lock:
   TimeoutSeconds: 30
@@ -688,7 +688,7 @@ mkdir -p Formatters
 ```csharp
 using MessagePack;
 
-namespace mini_server.Models;
+namespace liteapi.Models;
 
 [MessagePackObject]
 public class Packet<T>
@@ -742,7 +742,7 @@ using Microsoft.AspNetCore.Mvc.Formatters;
 using System.Text;
 using System.Text.Json;
 
-namespace mini_server.Formatters;
+namespace liteapi.Formatters;
 
 public class PacketInputFormatter : InputFormatter
 {
@@ -807,7 +807,7 @@ using Microsoft.AspNetCore.Mvc.Formatters;
 using System.Text;
 using System.Text.Json;
 
-namespace mini_server.Formatters;
+namespace liteapi.Formatters;
 
 public class PacketOutputFormatter : OutputFormatter
 {
@@ -855,7 +855,7 @@ public class PacketOutputFormatter : OutputFormatter
 ### 5.6 Program.cs에 Formatters 등록
 
 ```csharp
-using mini_server.Formatters;
+using liteapi.Formatters;
 
 // Add MVC Controllers with custom formatters
 builder.Services.AddControllers(options =>
@@ -1081,13 +1081,13 @@ dotnet add package prometheus-net.AspNetCore
 ```csharp
 using Prometheus;
 
-namespace mini_server.Services;
+namespace liteapi.Services;
 
 public class MetricsService
 {
     // Counters - 이벤트 총 발생 횟수 추적
     private static readonly Counter RequestsTotal = Metrics.CreateCounter(
-        "mini_server_requests_total",
+        "liteapi_requests_total",
         "Total number of HTTP requests",
         new CounterConfiguration
         {
@@ -1095,7 +1095,7 @@ public class MetricsService
         });
 
     private static readonly Counter DbLockAcquisitionsTotal = Metrics.CreateCounter(
-        "mini_server_db_lock_acquisitions_total",
+        "liteapi_db_lock_acquisitions_total",
         "Total number of database lock acquisitions",
         new CounterConfiguration
         {
@@ -1103,7 +1103,7 @@ public class MetricsService
         });
 
     private static readonly Counter PacketProcessingTotal = Metrics.CreateCounter(
-        "mini_server_packet_processing_total",
+        "liteapi_packet_processing_total",
         "Total number of packets processed",
         new CounterConfiguration
         {
@@ -1112,16 +1112,16 @@ public class MetricsService
 
     // Gauges - 현재 값 추적
     private static readonly Gauge ActiveDbLocks = Metrics.CreateGauge(
-        "mini_server_active_db_locks",
+        "liteapi_active_db_locks",
         "Number of currently active database locks");
 
     private static readonly Gauge ActiveUsers = Metrics.CreateGauge(
-        "mini_server_active_users",
+        "liteapi_active_users",
         "Number of currently active users");
 
     // Histograms - 값의 분포 추적 (요청 시간 등)
     private static readonly Histogram RequestDuration = Metrics.CreateHistogram(
-        "mini_server_request_duration_seconds",
+        "liteapi_request_duration_seconds",
         "HTTP request duration in seconds",
         new HistogramConfiguration
         {
@@ -1130,7 +1130,7 @@ public class MetricsService
         });
 
     private static readonly Histogram DbLockWaitDuration = Metrics.CreateHistogram(
-        "mini_server_db_lock_wait_duration_seconds",
+        "liteapi_db_lock_wait_duration_seconds",
         "Time spent waiting for database locks in seconds",
         new HistogramConfiguration
         {
@@ -1230,18 +1230,18 @@ curl http://localhost:5000/metrics
 
 출력 예시:
 ```
-# HELP mini_server_requests_total Total number of HTTP requests
-# TYPE mini_server_requests_total counter
-mini_server_requests_total{method="GET",endpoint="/api/users",status_code="200"} 42
+# HELP liteapi_requests_total Total number of HTTP requests
+# TYPE liteapi_requests_total counter
+liteapi_requests_total{method="GET",endpoint="/api/users",status_code="200"} 42
 
-# HELP mini_server_active_users Number of currently active users
-# TYPE mini_server_active_users gauge
-mini_server_active_users 15
+# HELP liteapi_active_users Number of currently active users
+# TYPE liteapi_active_users gauge
+liteapi_active_users 15
 
-# HELP mini_server_request_duration_seconds HTTP request duration in seconds
-# TYPE mini_server_request_duration_seconds histogram
-mini_server_request_duration_seconds_bucket{method="GET",endpoint="/api/users",le="0.001"} 10
-mini_server_request_duration_seconds_bucket{method="GET",endpoint="/api/users",le="0.002"} 25
+# HELP liteapi_request_duration_seconds HTTP request duration in seconds
+# TYPE liteapi_request_duration_seconds histogram
+liteapi_request_duration_seconds_bucket{method="GET",endpoint="/api/users",le="0.001"} 10
+liteapi_request_duration_seconds_bucket{method="GET",endpoint="/api/users",le="0.002"} 25
 ...
 ```
 
@@ -1253,7 +1253,7 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: 'mini_server'
+  - job_name: 'liteapi'
     static_configs:
       - targets: ['localhost:5000']
 ```
@@ -1267,15 +1267,15 @@ scrape_configs:
 ```bash
 # 루트 디렉토리에서
 cd ..
-dotnet new xunit -n mini_server.Tests -o mini_server.Tests
-cd mini_server.Tests
+dotnet new xunit -n liteapi.Tests -o liteapi.Tests
+cd liteapi.Tests
 ```
 
 ### 8.2 패키지 설치
 
 ```bash
-# mini_server 프로젝트 참조
-dotnet add reference ../mini_server/mini_server.csproj
+# liteapi 프로젝트 참조
+dotnet add reference ../liteapi/liteapi.csproj
 
 # 테스트 패키지
 dotnet add package Moq
@@ -1292,12 +1292,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using mini_server.Data;
-using mini_server.Services;
+using liteapi.Data;
+using liteapi.Services;
 using Moq;
 using Xunit;
 
-namespace mini_server.Tests.Services;
+namespace liteapi.Tests.Services;
 
 public class DbLockServiceTests : IDisposable
 {
@@ -1375,10 +1375,10 @@ public class DbLockServiceTests : IDisposable
 **Services/MetricsServiceTests.cs**
 ```csharp
 using FluentAssertions;
-using mini_server.Services;
+using liteapi.Services;
 using Xunit;
 
-namespace mini_server.Tests.Services;
+namespace liteapi.Tests.Services;
 
 public class MetricsServiceTests
 {
@@ -1463,10 +1463,10 @@ public class MetricsServiceTests
 **Models/UserTests.cs**
 ```csharp
 using FluentAssertions;
-using mini_server.Models;
+using liteapi.Models;
 using Xunit;
 
-namespace mini_server.Tests.Models;
+namespace liteapi.Tests.Models;
 
 public class UserTests
 {
@@ -1525,10 +1525,10 @@ public class UserTests
 **Models/RequestContextTests.cs**
 ```csharp
 using FluentAssertions;
-using mini_server.Models;
+using liteapi.Models;
 using Xunit;
 
-namespace mini_server.Tests.Models;
+namespace liteapi.Tests.Models;
 
 public class RequestContextTests
 {
@@ -1609,7 +1609,7 @@ dotnet test /p:CollectCoverage=true
 ## 최종 프로젝트 구조
 
 ```
-mini_server/
+liteapi/
 ├── Data/
 │   └── AppDbContext.cs                 # EF Core DbContext
 ├── Models/
@@ -1629,7 +1629,7 @@ mini_server/
 ├── Program.cs                          # 메인 진입점
 ├── appsettings.yaml                    # 설정 파일 (YAML)
 ├── appsettings.Development.yaml        # 개발 환경 설정
-├── mini_server.csproj                  # 프로젝트 파일
+├── liteapi.csproj                  # 프로젝트 파일
 ├── .gitignore                          # Git 무시 파일
 ├── README.md                           # 프로젝트 문서
 ├── GUIDE.md                            # 이 가이드
@@ -1638,14 +1638,14 @@ mini_server/
 ├── test-users.http                     # User CRUD 테스트
 └── test-metrics.http                   # Prometheus 메트릭 테스트
 
-mini_server.Tests/
+liteapi.Tests/
 ├── Models/
 │   ├── UserTests.cs                    # User 모델 테스트
 │   └── RequestContextTests.cs          # RequestContext 테스트
 ├── Services/
 │   ├── DbLockServiceTests.cs           # DbLockService 테스트
 │   └── MetricsServiceTests.cs          # MetricsService 테스트
-└── mini_server.Tests.csproj            # 테스트 프로젝트 파일
+└── liteapi.Tests.csproj            # 테스트 프로젝트 파일
 ```
 
 ---
@@ -1654,7 +1654,7 @@ mini_server.Tests/
 
 ### 패키지 버전
 
-**mini_server.csproj**
+**liteapi.csproj**
 ```xml
 <ItemGroup>
   <PackageReference Include="Dapper" Version="2.1.66" />
@@ -1674,7 +1674,7 @@ mini_server.Tests/
 </ItemGroup>
 ```
 
-**mini_server.Tests.csproj**
+**liteapi.Tests.csproj**
 ```xml
 <ItemGroup>
   <PackageReference Include="FluentAssertions" Version="8.8.0" />
