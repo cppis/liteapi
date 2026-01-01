@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET Core Launch",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/liteapi/bin/Debug/net9.0/liteapi.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/liteapi",
+            "stopAtEntry": false,
+            "console": "integratedTerminal",
+            "serverReadyAction": {
+                "action": "openExternally",
+                "pattern": "\\bNow listening on:\\s+(https?://\\S+)"
+            },
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+                "DOTNET_ROOT": "/usr/lib/dotnet",
+                "PATH": "/usr/lib/dotnet:${env:PATH}"
+            },
+            "sourceFileMap": {
+                "/Views": "${workspaceFolder}/Views"
+            },
+            "requireExactSource": false
+        },
+        {
+            "name": ".NET Core Launch (Tests)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-tests",
+            "program": "dotnet",
+            "args": ["test", "${workspaceFolder}/liteapi.Tests/liteapi.Tests.csproj"],
+            "cwd": "${workspaceFolder}/liteapi.Tests",
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        }
+    ]
+}

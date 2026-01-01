@@ -1,0 +1,84 @@
+### Test Packet Echo - JSON Request/Response
+POST http://localhost:5000/api/packet/echo
+Content-Type: application/json
+Accept: application/json
+
+{
+  "code": 0,
+  "message": "Test request",
+  "data": {
+    "name": "TestUser",
+    "value": 42,
+    "timestamp": "2026-01-01T00:00:00Z"
+  }
+}
+
+### Test Packet Echo - JSON Request, MessagePack Response
+POST http://localhost:5000/api/packet/echo
+Content-Type: application/json
+Accept: application/x-msgpack
+
+{
+  "code": 0,
+  "message": "Test request",
+  "data": {
+    "name": "TestUser",
+    "value": 100,
+    "timestamp": "2026-01-01T00:00:00Z"
+  }
+}
+
+### Test Packet Echo - MessagePack Request/Response (binary data)
+# Note: MessagePack binary requests need to be sent via code or tools like Postman
+# This is a placeholder showing the expected JSON structure
+
+### Create User via Packet - JSON
+POST http://localhost:5000/api/packet/user
+Content-Type: application/json
+Accept: application/json
+
+{
+  "code": 0,
+  "message": "Create user",
+  "data": {
+    "userId": 1001,
+    "username": "packet_user",
+    "email": "packet@example.com",
+    "level": 10,
+    "gold": 5000
+  }
+}
+
+### Create User via Packet - JSON Request, MessagePack Response
+POST http://localhost:5000/api/packet/user
+Content-Type: application/json
+Accept: application/x-msgpack
+
+{
+  "code": 0,
+  "message": "Create user",
+  "data": {
+    "userId": 1002,
+    "username": "msgpack_user",
+    "email": "msgpack@example.com",
+    "level": 15,
+    "gold": 7500
+  }
+}
+
+### Performance Test - Multiple Requests
+# Send multiple packet echo requests to test serialization performance
+
+POST http://localhost:5000/api/packet/echo
+Content-Type: application/json
+Accept: application/json
+
+{
+  "code": 0,
+  "message": "Performance test",
+  "data": {
+    "name": "PerfTest1",
+    "value": 999,
+    "timestamp": "2026-01-01T12:00:00Z"
+  }
+}

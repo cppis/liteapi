@@ -1,0 +1,28 @@
+### Get Prometheus Metrics
+# The /metrics endpoint exposes all Prometheus metrics in text format
+# This can be scraped by a Prometheus server for monitoring
+GET http://localhost:5000/metrics
+Accept: text/plain
+
+###
+
+### Health Check (generates metrics)
+# This will increment the request counter and create histogram data
+GET http://localhost:5000/health
+Accept: application/json
+
+###
+
+### Test Locked Endpoint (generates DB lock metrics)
+# This will track DB lock acquisition and duration
+GET http://localhost:5000/api/test/locked
+X-User-Id: 12345
+Accept: application/json
+
+###
+
+### Check Metrics Again (see updated values)
+GET http://localhost:5000/metrics
+Accept: text/plain
+
+###

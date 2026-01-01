@@ -1,0 +1,23 @@
+### Health Check (no lock required)
+GET http://localhost:5000/health
+
+### Test Locked Endpoint (requires lock via middleware)
+GET http://localhost:5000/api/test/locked
+X-User-Id: 12345
+
+### Test Locked Endpoint - Unauthorized (no user ID)
+GET http://localhost:5000/api/test/locked
+
+### Test Concurrent Lock (manual lock handling)
+POST http://localhost:5000/api/test/concurrent
+X-User-Id: 12345
+Content-Type: application/json
+
+### Test Direct Lock (bypasses middleware)
+POST http://localhost:5000/api/test/direct-lock?userId=12345
+
+### Test Concurrent Requests (send multiple times quickly to test locking)
+# Open multiple instances of this request and run them simultaneously
+POST http://localhost:5000/api/test/concurrent
+X-User-Id: 99999
+Content-Type: application/json

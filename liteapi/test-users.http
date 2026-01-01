@@ -1,0 +1,40 @@
+### Create User
+POST http://localhost:5000/api/users
+Content-Type: application/json
+
+{
+  "userId": 1,
+  "username": "testuser",
+  "email": "test@example.com",
+  "level": 1,
+  "experience": 0,
+  "gold": 100
+}
+
+### Get User by ID
+GET http://localhost:5000/api/users/1
+
+### Get All Users
+GET http://localhost:5000/api/users
+
+### Update User (with DB lock)
+PUT http://localhost:5000/api/users/1
+Content-Type: application/json
+
+{
+  "userId": 1,
+  "username": "testuser_updated",
+  "email": "updated@example.com",
+  "level": 5,
+  "experience": 1000,
+  "gold": 500
+}
+
+### Add Gold to User (with DB lock)
+POST http://localhost:5000/api/users/1/add-gold?amount=100
+
+### Delete User
+DELETE http://localhost:5000/api/users/1
+
+### Test concurrent gold addition (run multiple times quickly)
+POST http://localhost:5000/api/users/1/add-gold?amount=50

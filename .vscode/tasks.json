@@ -1,0 +1,77 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "build",
+                "${workspaceFolder}/liteapi/liteapi.csproj",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "problemMatcher": "$msCompile",
+            "options": {
+                "env": {
+                    "DOTNET_ROOT": "/usr/lib/dotnet",
+                    "PATH": "/usr/lib/dotnet:${env:PATH}"
+                }
+            }
+        },
+        {
+            "label": "build-tests",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "build",
+                "${workspaceFolder}/liteapi.Tests/liteapi.Tests.csproj",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "problemMatcher": "$msCompile",
+            "options": {
+                "env": {
+                    "DOTNET_ROOT": "/usr/lib/dotnet",
+                    "PATH": "/usr/lib/dotnet:${env:PATH}"
+                }
+            }
+        },
+        {
+            "label": "publish",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "publish",
+                "${workspaceFolder}/liteapi/liteapi.csproj",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "problemMatcher": "$msCompile",
+            "options": {
+                "env": {
+                    "DOTNET_ROOT": "/usr/lib/dotnet",
+                    "PATH": "/usr/lib/dotnet:${env:PATH}"
+                }
+            }
+        },
+        {
+            "label": "watch",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "watch",
+                "run",
+                "--project",
+                "${workspaceFolder}/liteapi/liteapi.csproj"
+            ],
+            "problemMatcher": "$msCompile",
+            "options": {
+                "env": {
+                    "DOTNET_ROOT": "/usr/lib/dotnet",
+                    "PATH": "/usr/lib/dotnet:${env:PATH}"
+                }
+            }
+        }
+    ]
+}
