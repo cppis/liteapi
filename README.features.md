@@ -1,7 +1,5 @@
 # LiteAPI 주요 기능
 
-ASP.NET Core 9.0 Minimal API 프로젝트로 모바일 웹 서버의 기본 기능을 제공합니다.
-
 ## 주요 기능
 
 ### 1. JSON & MessagePack 직렬화 지원

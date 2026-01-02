@@ -6,7 +6,7 @@
 
 ASP.NET Core 9.0 Minimal API 프로젝트로 모바일 웹 서버의 기본 기능을 제공합니다.
 
-<br/>
+<br/><br/><br/>
 
 ## 주요 기능  
 [주요 기능 소개](./README.features.md) 문서를 참고하세요.
