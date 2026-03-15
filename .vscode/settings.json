@@ -1,0 +1,23 @@
+{
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "terminal.integrated.automationProfile.linux": {
+        "path": "/bin/bash",
+        "env": {
+            "PATH": "${env:HOME}/.dotnet:${env:PATH}"
+        }
+    },
+    "debug.terminal.clearBeforeReusing": true,
+    "omnisharp.useModernNet": true,
+    "dotnet.defaultSolution": "liteapi.sln",
+    "omnisharp.enableMsBuildLoadProjectsOnDemand": true,
+    "omnisharp.enableRoslynAnalyzers": true,
+    "omnisharp.enableEditorConfigSupport": true,
+    "omnisharp.sdkPath": "/usr/lib/dotnet",
+    "omnisharp.useGlobalMono": "never",
+    "dotnet-test-explorer.testProjectPath": "**/*.Tests.csproj",
+    "files.exclude": {
+        "**/bin": true,
+        "**/obj": true
+    },
+    "dotnet.formatting.organizeImportsOnFormat": true
+}

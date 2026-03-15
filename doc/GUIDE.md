@@ -15,8 +15,9 @@ ASP.NET Core 기반 게임 웹 서버 개발을 위한 LiteApi 구현 가이드�
 7. [6단계: Serilog 로깅 추가](#6단계-serilog-로깅-추가)
 8. [7단계: Prometheus 메트릭 추가](#7단계-prometheus-메트릭-추가)
 9. [8단계: xUnit 단위 테스트 추가](#8단계-xunit-단위-테스트-추가)
-10. [최종 프로젝트 구조](#최종-프로젝트-구조)
-11. [참고 자료](#참고-자료)
+10. [9단계: Redis 캐싱 추가](#9단계-redis-캐싱-추가)
+11. [최종 프로젝트 구조](#최종-프로젝트-구조)
+12. [참고 자료](#참고-자료)
 
 ---
 
@@ -1606,6 +1607,395 @@ dotnet test /p:CollectCoverage=true
 
 ---
 
+## 9단계: Redis 캐싱 추가
+
+### 핵심 원칙
+
+> **캐시 장애가 서비스 장애가 되어서는 안 된다.**
+>
+> Redis는 성능 최적화 수단이며, 핵심 의존성이 아니다.
+> Redis 연결 실패, 타임아웃, 직렬화 오류 등 어떤 캐시 장애가 발생하더라도
+> LiteApi는 DB 직접 조회로 정상 동작해야 한다.
+
+이 원칙은 모든 구현에 적용되며:
+- 모든 캐시 작업을 try-catch로 감싸고, 예외 시 로그만 남긴 뒤 DB로 폴백
+- Redis를 optional dependency로 취급 (Redis 없이도 서비스 기동 가능)
+- 헬스체크에서 Redis 상태는 `Degraded`로 보고 (`Unhealthy`로 만들지 않음)
+
+### 9.1 필요한 패키지 설치
+
+```bash
+dotnet add package Microsoft.Extensions.Caching.StackExchangeRedis --version 10.0.5
+dotnet add package AspNetCore.HealthChecks.Redis --version 9.0.0
+```
+
+- `Microsoft.Extensions.Caching.StackExchangeRedis`: `IDistributedCache` 구현체, `StackExchange.Redis` 내부 포함
+- `AspNetCore.HealthChecks.Redis`: Redis 헬스체크 지원
+
+### 9.2 Redis 연결 설정
+
+**appsettings.yaml에 Redis 설정 추가:**
+```yaml
+Redis:
+  Connection: "localhost:6379"
+  InstanceName: "liteapi:"
+  DefaultTTLSeconds: 300    # 단일 엔티티 캐시 만료 5분
+  ListTTLSeconds: 30        # 목록 캐시 만료 30초 (무효화 안 함, TTL 만료에 의존)
+```
+
+**Program.cs에 서비스 등록:**
+```csharp
+// Redis 캐시 등록 — 실제 연결은 첫 사용 시 lazy하게 이루어진다.
+// 연결 실패 시에도 서비스는 정상 기동되며, CacheService 내부 try-catch로 폴백한다.
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration["Redis:Connection"];
+    options.InstanceName = builder.Configuration["Redis:InstanceName"];
+});
+```
+
+### 9.3 CacheService 구현
+
+**새 파일: `Services/CacheService.cs`**
+
+`IDistributedCache`를 래핑하여 모든 캐시 예외를 내부에서 흡수한다.
+
+```csharp
+public class CacheService
+{
+    private readonly IDistributedCache _cache;
+    private readonly MetricsService _metrics;
+    private readonly ILogger<CacheService> _logger;
+    private readonly TimeSpan _defaultTTL;
+
+    public CacheService(
+        IDistributedCache cache,
+        MetricsService metrics,
+        IConfiguration configuration,
+        ILogger<CacheService> logger)
+    {
+        _cache = cache;
+        _metrics = metrics;
+        _logger = logger;
+        _defaultTTL = TimeSpan.FromSeconds(
+            configuration.GetValue<int>("Redis:DefaultTTLSeconds", 300));
+    }
+
+    public async Task<T?> GetAsync<T>(string key)
+    {
+        var prefix = key.Contains(':') ? key[..key.IndexOf(':')] : key;
+        try
+        {
+            using var timer = _metrics.TrackCacheOperationDuration("get");
+            var cached = await _cache.GetStringAsync(key);
+            if (cached is null)
+            {
+                _metrics.IncrementCacheMiss(prefix);
+                return default;
+            }
+            _metrics.IncrementCacheHit(prefix);
+            return JsonSerializer.Deserialize<T>(cached);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "캐시 읽기 실패: {Key}. DB로 폴백", key);
+            _metrics.IncrementCacheMiss(prefix);
+            return default;
+        }
+    }
+
+    public async Task SetAsync<T>(string key, T value, TimeSpan? ttl = null)
+    {
+        try
+        {
+            using var timer = _metrics.TrackCacheOperationDuration("set");
+            var json = JsonSerializer.Serialize(value);
+            await _cache.SetStringAsync(key, json, new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = ttl ?? _defaultTTL
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "캐시 쓰기 실패: {Key}. 무시하고 계속 진행", key);
+        }
+    }
+
+    public async Task RemoveAsync(string key)
+    {
+        try
+        {
+            using var timer = _metrics.TrackCacheOperationDuration("remove");
+            await _cache.RemoveAsync(key);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "캐시 삭제 실패: {Key}. TTL 만료에 의존", key);
+        }
+    }
+}
+```
+
+DI 등록: `builder.Services.AddSingleton<CacheService>();`
+
+### 9.4 UserService 구현
+
+**새 파일: `Services/UserService.cs`**
+
+캐시 로직을 서비스 레이어에 캡슐화한다. 엔드포인트는 `UserService`만 호출하며 캐시 존재를 알지 못한다.
+
+#### Load → Process → Save 아키텍처
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────┐
+│   Endpoint   │───>│  UserService │───>│ CacheService │───>│  Redis  │
+│              │    │              │    │              │    │         │
+│  1. Load     │    │  Load:       │    │  Get/Set/    │    └─────────┘
+│  2. Process  │    │   캐시→DB    │    │  Remove      │
+│  3. Save     │    │  Save:       │    │  (예외 흡수)  │
+│              │    │   DB저장     │    └──────────────┘
+│              │    │   →캐시무효화│
+│              │    │              │    ┌─────────┐
+│              │    │              │───>│  MySQL  │
+└──────────────┘    └──────────────┘    └─────────┘
+```
+
+#### Load 메서드 (데이터 조회)
+
+| 메서드 | 용도 | 캐시 사용 | ChangeTracker |
+|--------|------|----------|---------------|
+| `GetByIdAsync(userId)` | 읽기 전용 | 캐시 → DB 폴백 | `AsNoTracking` |
+| `GetAllAsync()` | 목록 조회 | 캐시(30초) → DB 폴백 | `AsNoTracking` |
+| `LoadAsync(userId)` | 쓰기용 | 사용 안 함 (DB 직접) | 추적됨 |
+
+```csharp
+// [읽기 전용 Load] 캐시 → DB 폴백. AsNoTracking 적용.
+public async Task<User?> GetByIdAsync(ulong userId)
+{
+    var cached = await _cache.GetAsync<User>(UserKey(userId));
+    if (cached is not null) return cached;
+
+    var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.UserId == userId);
+    if (user is not null)
+        await _cache.SetAsync(UserKey(userId), user, _userTTL);
+    return user;
+}
+
+// [쓰기용 Load] DB에서 직접 조회. ChangeTracker에 추적됨.
+public async Task<User?> LoadAsync(ulong userId)
+{
+    return await _db.Users.FindAsync(userId);
+}
+```
+
+#### Save 메서드 (저장 + 캐시 무효화)
+
+모든 쓰기 메서드는 **명시적 트랜잭션**을 사용하며, 캐시 무효화는 커밋 이후에 수행한다.
+
+```csharp
+public async Task SaveAsync(User user)
+{
+    user.UpdatedAt = DateTime.UtcNow;
+
+    await using var transaction = await _db.Database.BeginTransactionAsync();
+    await _db.SaveChangesAsync();
+    await transaction.CommitAsync();
+
+    // 커밋 성공 후에만 캐시 무효화
+    await _cache.RemoveAsync(UserKey(user.UserId));
+}
+```
+
+DI 등록: `builder.Services.AddScoped<UserService>();` (AppDbContext와 동일 Scoped)
+
+### 9.5 엔드포인트에 Load → Process → Save 패턴 적용
+
+기존 엔드포인트에서 `AppDbContext` 직접 사용을 `UserService`로 교체한다.
+
+**읽기 엔드포인트 — Load만 수행:**
+```csharp
+app.MapGet("/api/users/{userId:long}", async (ulong userId, UserService userService) =>
+{
+    var user = await userService.GetByIdAsync(userId);
+    return user is not null ? Results.Ok(user) : Results.NotFound();
+});
+```
+
+**쓰기 엔드포인트 — Load → Process → Save:**
+```csharp
+app.MapPut("/api/users/{userId:long}", async (
+    ulong userId, User updatedUser,
+    UserService userService, DbLockService lockService) =>
+{
+    var result = await lockService.ExecuteWithLockAsync(userId, async () =>
+    {
+        // 1. Load — DB에서 직접 조회 (ChangeTracker 추적)
+        var user = await userService.LoadAsync(userId);
+        if (user is null) return Results.NotFound();
+
+        // 2. Process — 인메모리 수정만
+        user.Username = updatedUser.Username;
+        user.Email = updatedUser.Email;
+        user.Level = updatedUser.Level;
+        user.Experience = updatedUser.Experience;
+        user.Gold = updatedUser.Gold;
+
+        // 3. Save — DB 저장 + 캐시 무효화
+        await userService.SaveAsync(user);
+        return Results.Ok(user);
+    });
+    return result ?? Results.Conflict(new { error = "LOCK_FAILED" });
+});
+```
+
+**패턴 요약:**
+
+| 엔드포인트 | Load | Process | Save |
+|-----------|------|---------|------|
+| `GET /api/users/{id}` | `GetByIdAsync` (캐시→DB) | — | — |
+| `GET /api/users` | `GetAllAsync` (캐시→DB) | — | — |
+| `POST /api/users` | — | — | `CreateAsync` |
+| `PUT /api/users/{id}` | `LoadAsync` (DB직접) | 프로퍼티 수정 | `SaveAsync` |
+| `DELETE /api/users/{id}` | `DeleteAsync` (내부 처리) | — | — |
+| `POST /api/users/{id}/add-gold` | `LoadAsync` (DB직접) | Gold 증가 | `SaveAsync` |
+
+### 9.6 헬스체크 개선
+
+기존 단순 lambda 헬스체크를 ASP.NET Core Health Checks 미들웨어로 교체한다.
+
+```csharp
+var redisConnection = builder.Configuration["Redis:Connection"] ?? "localhost:6379";
+builder.Services.AddHealthChecks()
+    .AddRedis(redisConnection, name: "redis",
+        failureStatus: HealthStatus.Degraded);  // Unhealthy가 아닌 Degraded
+
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = async (context, report) =>
+    {
+        context.Response.ContentType = "application/json";
+        var result = JsonSerializer.Serialize(new
+        {
+            status = report.Status.ToString(),
+            checks = report.Entries.Select(e => new
+            {
+                name = e.Key,
+                status = e.Value.Status.ToString(),
+                description = e.Value.Description
+            }),
+            timestamp = DateTime.UtcNow
+        });
+        await context.Response.WriteAsync(result);
+    }
+});
+```
+
+### 9.7 Prometheus 메트릭 추가
+
+**MetricsService에 캐시 메트릭 추가:**
+
+| 메트릭 | 타입 | 레이블 | 설명 |
+|--------|------|--------|------|
+| `mini_server_cache_hits_total` | Counter | `key_prefix` | 캐시 히트 수 |
+| `mini_server_cache_misses_total` | Counter | `key_prefix` | 캐시 미스 수 |
+| `mini_server_cache_operation_duration_seconds` | Histogram | `operation` | 캐시 작업 소요 시간 (get/set/remove) |
+
+카디널리티 폭발 방지를 위해 전체 키가 아닌 prefix만 레이블로 사용한다 (`"user:123"` → `"user"`).
+
+### 9.8 캐싱 전략 — 모바일 게임서버 특성
+
+#### 데이터 유형별 캐싱 정책
+
+| 데이터 유형 | 캐시 키 | TTL | 무효화 | 이유 |
+|-----------|---------|-----|--------|------|
+| 단일 유저 | `user:{id}` | 300초 | 쓰기 시 즉시 삭제 | 재화/레벨 변경이 바로 반영되어야 함 |
+| 목록/랭킹 | `users:all` | 30초 | **안 함** (TTL 만료에 의존) | 몇 초 stale 허용, 무효화 비용 불필요 |
+
+**핵심 결정: 목록 캐시는 무효화하지 않는다**
+- 게임서버에서 "랭킹이 30초 늦게 반영됨"은 문제가 아님
+- 쓰기마다 목록 캐시를 삭제하는 비용이 사라짐
+- 단일 유저 캐시만 즉시 무효화하므로 무효화 로직이 단순해짐
+
+#### 트랜잭션 전략
+
+캐시 무효화는 반드시 트랜잭션 커밋 이후에 수행한다:
+
+```
+1. BeginTransaction
+2. SaveChangesAsync (DB 변경)
+3. CommitAsync (트랜잭션 확정)
+4. Cache RemoveAsync (캐시 무효화)
+```
+
+| 시점 | 장애 | 결과 |
+|------|------|------|
+| SaveChangesAsync 실패 | DB 예외 | 트랜잭션 롤백, 캐시 변경 없음 |
+| CommitAsync 실패 | DB 커밋 예외 | 트랜잭션 롤백, 캐시 변경 없음 |
+| RemoveAsync 실패 | Redis 예외 | DB 커밋 완료, 캐시는 TTL 만료에 의존 |
+
+### 9.9 에러 처리
+
+에러 처리는 **CacheService 한 곳에서만** 수행한다:
+
+```
+Endpoint → UserService → CacheService (try-catch) → IDistributedCache → Redis
+                                         ↓ 실패 시
+                                      return default / 무시
+```
+
+| 장애 상황 | 동작 | 서비스 영향 |
+|----------|------|-----------|
+| Redis 연결 실패 | 캐시 무시, DB 직접 조회 | **없음** |
+| Redis 타임아웃 | 로그 경고, DB 폴백 | **없음** |
+| Redis 서버 다운 | 모든 캐시 미스, DB 전량 처리 | **없음** (성능 저하만) |
+| 서비스 기동 시 Redis 부재 | 정상 기동, 첫 접근 시 폴백 | **없음** |
+
+### 9.10 테스트
+
+**단위 테스트:**
+
+| 파일 | 테스트 수 | 대상 |
+|------|----------|------|
+| `liteapi.Tests/Services/CacheServiceTests.cs` | 11 | CacheService (CRUD + 장애 복원력 + 메트릭) |
+| `liteapi.Tests/Services/UserServiceTests.cs` | 20 | UserService (Load/Save + 캐시 무효화 + 트랜잭션) |
+
+**HTTP 통합 테스트: `Test.http/test-cache.http`**
+
+| # | 요청 | 검증 |
+|---|------|------|
+| 1 | POST /api/users | 유저 생성 |
+| 2 | GET /api/users/1 | 캐시 미스 → DB 조회 → 캐시 저장 |
+| 3 | GET /api/users/1 | 캐시 히트 → DB 쿼리 없음 |
+| 4 | PUT /api/users/1 | Load → Process → Save → 캐시 무효화 |
+| 5 | GET /api/users/1 | 캐시 미스 → 최신 데이터 반환 |
+| 6 | GET /health | Redis 상태 Healthy/Degraded 확인 |
+| 7 | GET /metrics | cache_hits/misses/duration 확인 |
+
+```bash
+# 단위 테스트 실행
+dotnet test liteapi.Tests/liteapi.Tests.csproj
+
+# 캐시 관련 테스트만 실행
+dotnet test liteapi.Tests/liteapi.Tests.csproj \
+  --filter "FullyQualifiedName~CacheService|FullyQualifiedName~UserService"
+```
+
+### 9.11 변경된 파일
+
+| 파일 | 변경 내용 |
+|-----|---------|
+| `liteapi.csproj` | Redis, HealthChecks 패키지 추가 |
+| `appsettings.yaml` | Redis 연결 설정 추가 |
+| `Program.cs` | Redis 서비스 등록, UserService DI, 엔드포인트 변경, 헬스체크 개선 |
+| `Services/CacheService.cs` | **신규** — 캐시 서비스 (예외 흡수, 메트릭 기록) |
+| `Services/UserService.cs` | **신규** — 사용자 서비스 (Load/Save 패턴) |
+| `Services/MetricsService.cs` | 캐시 메트릭 추가 |
+| `Test.http/test-cache.http` | **신규** — 캐시 HTTP 테스트 파일 |
+| `liteapi.Tests/Services/CacheServiceTests.cs` | **신규** — CacheService 단위 테스트 (11개) |
+| `liteapi.Tests/Services/UserServiceTests.cs` | **신규** — UserService 단위 테스트 (20개) |
+
+---
+
 ## 최종 프로젝트 구조
 
 ```
@@ -1617,8 +2007,10 @@ liteapi/
 │   ├── User.cs                         # User 엔티티
 │   └── Packet.cs                       # 패킷 모델
 ├── Services/
+│   ├── CacheService.cs                 # Redis 캐시 서비스 (예외 흡수, 메트릭)
 │   ├── DbLockService.cs                # DB Lock 서비스 (EF Core 통합)
-│   └── MetricsService.cs               # Prometheus 메트릭 서비스
+│   ├── MetricsService.cs               # Prometheus 메트릭 서비스
+│   └── UserService.cs                  # 사용자 서비스 (Load/Save 패턴)
 ├── Middleware/
 │   └── PacketLockMiddleware.cs         # 자동 Lock 미들웨어
 ├── Formatters/
@@ -1626,10 +2018,12 @@ liteapi/
 │   └── PacketOutputFormatter.cs        # 커스텀 Output Formatter
 ├── logs/                               # Serilog 로그 파일
 │   └── mini-server-YYYY-MM-DD.log      # 일별 롤링 로그
+├── Test.http/
+│   └── test-cache.http                 # 캐시 HTTP 테스트
 ├── Program.cs                          # 메인 진입점
-├── appsettings.yaml                    # 설정 파일 (YAML)
+├── appsettings.yaml                    # 설정 파일 (YAML, Redis 설정 포함)
 ├── appsettings.Development.yaml        # 개발 환경 설정
-├── liteapi.csproj                  # 프로젝트 파일
+├── liteapi.csproj                      # 프로젝트 파일
 ├── .gitignore                          # Git 무시 파일
 ├── README.md                           # 프로젝트 문서
 ├── GUIDE.md                            # 이 가이드
@@ -1643,9 +2037,11 @@ liteapi.Tests/
 │   ├── UserTests.cs                    # User 모델 테스트
 │   └── RequestContextTests.cs          # RequestContext 테스트
 ├── Services/
+│   ├── CacheServiceTests.cs            # CacheService 테스트 (11개)
 │   ├── DbLockServiceTests.cs           # DbLockService 테스트
-│   └── MetricsServiceTests.cs          # MetricsService 테스트
-└── liteapi.Tests.csproj            # 테스트 프로젝트 파일
+│   ├── MetricsServiceTests.cs          # MetricsService 테스트
+│   └── UserServiceTests.cs             # UserService 테스트 (20개)
+└── liteapi.Tests.csproj                # 테스트 프로젝트 파일
 ```
 
 ---
@@ -1657,12 +2053,14 @@ liteapi.Tests/
 **liteapi.csproj**
 ```xml
 <ItemGroup>
+  <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
   <PackageReference Include="Dapper" Version="2.1.66" />
   <PackageReference Include="MessagePack" Version="3.1.4" />
   <PackageReference Include="MessagePack.AspNetCoreMvcFormatter" Version="3.1.4" />
   <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.22" />
   <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.11" />
   <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11" />
+  <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.5" />
   <PackageReference Include="MySqlConnector" Version="2.5.0" />
   <PackageReference Include="NetEscapades.Configuration.Yaml" Version="3.1.0" />
   <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="8.0.2" />
@@ -1762,6 +2160,12 @@ dotnet build
 - `Lock:TimeoutSeconds` 값 증가
 - 트랜잭션 시간 최적화
 
+#### 4. Redis 연결 실패
+- Redis 없이도 서비스는 정상 기동됨 (CacheService가 예외 흡수)
+- `appsettings.yaml`의 `Redis:Connection` 확인
+- Redis 서버 실행 확인: `redis-cli ping`
+- `/health` 엔드포인트에서 Redis 상태가 `Degraded`로 표시됨
+
 ---
 
 ### 주요 엔드포인트
@@ -1789,10 +2193,10 @@ dotnet test
 ```
 
 ```
-Passed!  - Failed:     0, Passed:    48, Skipped:     5, Total:    53, Duration: 145 ms
+Passed!  - Failed:     0, Passed:    79, Skipped:     5, Total:    84, Duration: 145 ms
 ```
 
-- **48개 통과**: 모든 단위 테스트 성공
+- **79개 통과**: 모든 단위 테스트 성공 (기존 48 + CacheService 11 + UserService 20)
 - **5개 스킵**: MySQL 필요한 통합 테스트 (선택사항)
 
 ---
@@ -1811,10 +2215,10 @@ Passed!  - Failed:     0, Passed:    48, Skipped:     5, Total:    53, Duration:
    - Role-based 권한 관리
    - OAuth 2.0 통합
 
-3. **캐싱 추가**
-   - Redis 캐시 레이어
-   - ResponseCaching 미들웨어
-   - Memory Cache 구현
+3. **캐싱 확장**
+   - Redis Pub/Sub: 다중 인스턴스 환경에서 캐시 무효화 전파
+   - Rate Limiting: Redis 기반 API 호출 제한
+   - 새로운 Entity 추가 시 동일 패턴으로 `ItemService`, `GuildService` 등 추가
 
 4. **API 버저닝**
    - URL 기반 버저닝
@@ -1846,7 +2250,7 @@ Passed!  - Failed:     0, Passed:    48, Skipped:     5, Total:    53, Duration:
 ---
 
 **작성일**: 2026-01-01
-**버전**: 2.0.0
+**버전**: 3.0.0
 **프레임워크**: .NET 8.0
-**테스트**: 48/53 통과 (92%)
-**커버리지**: Services, Models, Middleware
+**테스트**: 79/84 통과 (94%)
+**커버리지**: Services (CacheService, UserService, DbLockService, MetricsService), Models, Middleware
