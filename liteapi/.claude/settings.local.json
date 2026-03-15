@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:code.claude.com)",
+      "Bash(claude-code --version)",
+      "Read(//home/cppis/.config/**)",
+      "Bash(cat ~/.config/claude-code/config.json)",
+      "Bash(curl:*)",
+      "WebSearch",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python3:*)",
+      "Bash(git clone:*)",
+      "Bash(mkdir:*)",
+      "Bash(tree:*)",
+      "Bash(dotnet add:*)",
+      "Bash(dotnet build:*)",
+      "Bash(ls:*)",
+      "Bash(dotnet test:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
