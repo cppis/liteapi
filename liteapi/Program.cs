@@ -1,4 +1,7 @@
+using System.Text.Json;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using liteapi.Data;
 using liteapi.Formatters;
 using liteapi.Middleware;
@@ -42,10 +45,25 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
 });
 
+// Configure Redis cache
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration["Redis:Connection"];
+    options.InstanceName = builder.Configuration["Redis:InstanceName"];
+});
+
+// Configure health checks
+var redisConnection = builder.Configuration["Redis:Connection"] ?? "localhost:6379";
+builder.Services.AddHealthChecks()
+    .AddRedis(redisConnection, name: "redis",
+        failureStatus: HealthStatus.Degraded);
+
 // Register custom services
 builder.Services.AddScoped<RequestContext>();
 builder.Services.AddSingleton<DbLockService>();
 builder.Services.AddSingleton<MetricsService>();
+builder.Services.AddSingleton<CacheService>();
+builder.Services.AddScoped<UserService>();
 
 var app = builder.Build();
 
@@ -88,9 +106,27 @@ app.Use(async (context, next) =>
 app.UsePacketLock();
 
 // Health check endpoint (no lock required)
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }))
-    .WithName("HealthCheck")
-    .WithOpenApi();
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = async (context, report) =>
+    {
+        context.Response.ContentType = "application/json";
+        var result = JsonSerializer.Serialize(new
+        {
+            status = report.Status.ToString(),
+            checks = report.Entries.Select(e => new
+            {
+                name = e.Key,
+                status = e.Value.Status.ToString(),
+                description = e.Value.Description
+            }),
+            timestamp = DateTime.UtcNow
+        });
+        await context.Response.WriteAsync(result);
+    }
+})
+.WithName("HealthCheck")
+.WithOpenApi();
 
 // Test endpoint that requires lock
 app.MapGet("/api/test/locked", async (RequestContext requestContext, ILogger<Program> logger) =>
@@ -183,36 +219,35 @@ app.MapPost("/api/test/direct-lock", async (
 .WithName("TestDirectLock")
 .WithOpenApi();
 
-// ========== User CRUD Endpoints (EF Core) ==========
+// ========== User CRUD Endpoints (Load → Process → Save) ==========
 
 // Create user
-app.MapPost("/api/users", async (User user, AppDbContext dbContext) =>
+app.MapPost("/api/users", async (User user, UserService userService) =>
 {
-    user.CreatedAt = DateTime.UtcNow;
-    user.UpdatedAt = DateTime.UtcNow;
-
-    dbContext.Users.Add(user);
-    await dbContext.SaveChangesAsync();
-
-    return Results.Created($"/api/users/{user.UserId}", user);
+    // 1. Load (none — new entity)
+    // 2. Process (none — input as-is)
+    // 3. Save
+    var created = await userService.CreateAsync(user);
+    return Results.Created($"/api/users/{created.UserId}", created);
 })
 .WithName("CreateUser")
 .WithOpenApi();
 
 // Get user by ID
-app.MapGet("/api/users/{userId:long}", async (ulong userId, AppDbContext dbContext) =>
+app.MapGet("/api/users/{userId:long}", async (ulong userId, UserService userService) =>
 {
-    var user = await dbContext.Users.FindAsync(userId);
-
+    // 1. Load (cache → DB fallback)
+    var user = await userService.GetByIdAsync(userId);
     return user is not null ? Results.Ok(user) : Results.NotFound();
 })
 .WithName("GetUser")
 .WithOpenApi();
 
 // Get all users
-app.MapGet("/api/users", async (AppDbContext dbContext) =>
+app.MapGet("/api/users", async (UserService userService) =>
 {
-    var users = await dbContext.Users.ToListAsync();
+    // 1. Load (cache TTL 30s → DB fallback)
+    var users = await userService.GetAllAsync();
     return Results.Ok(users);
 })
 .WithName("GetAllUsers")
@@ -222,85 +257,66 @@ app.MapGet("/api/users", async (AppDbContext dbContext) =>
 app.MapPut("/api/users/{userId:long}", async (
     ulong userId,
     User updatedUser,
-    AppDbContext dbContext,
-    DbLockService lockService,
-    ILogger<Program> logger) =>
+    UserService userService,
+    DbLockService lockService) =>
 {
-    // Acquire lock for this user
-    var lockAcquired = await lockService.AcquireLockAsync(userId, dbContext);
-    if (!lockAcquired)
+    var result = await lockService.ExecuteWithLockAsync(userId, async () =>
     {
-        logger.LogWarning("Failed to acquire lock for user update: {UserId}", userId);
-        return Results.Conflict(new { error = "LOCK_FAILED", message = "Could not acquire lock for user update" });
-    }
-
-    try
-    {
-        var user = await dbContext.Users.FindAsync(userId);
+        // 1. Load — DB direct (ChangeTracker tracked)
+        var user = await userService.LoadAsync(userId);
         if (user is null)
-        {
             return Results.NotFound();
-        }
 
-        // Update fields
+        // 2. Process — in-memory only
         user.Username = updatedUser.Username;
         user.Email = updatedUser.Email;
         user.Level = updatedUser.Level;
         user.Experience = updatedUser.Experience;
         user.Gold = updatedUser.Gold;
-        user.UpdatedAt = DateTime.UtcNow;
 
-        await dbContext.SaveChangesAsync();
-
-        logger.LogInformation("User updated: {UserId}", userId);
+        // 3. Save — DB save + cache invalidation
+        await userService.SaveAsync(user);
         return Results.Ok(user);
-    }
-    finally
-    {
-        await lockService.ReleaseLockAsync(userId, dbContext);
-    }
+    });
+
+    return result ?? Results.Conflict(new { error = "LOCK_FAILED",
+        message = "Could not acquire lock for user update" });
 })
 .WithName("UpdateUser")
 .WithOpenApi();
 
 // Delete user
-app.MapDelete("/api/users/{userId:long}", async (ulong userId, AppDbContext dbContext) =>
+app.MapDelete("/api/users/{userId:long}", async (ulong userId, UserService userService) =>
 {
-    var user = await dbContext.Users.FindAsync(userId);
-    if (user is null)
-    {
-        return Results.NotFound();
-    }
-
-    dbContext.Users.Remove(user);
-    await dbContext.SaveChangesAsync();
-
-    return Results.NoContent();
+    var deleted = await userService.DeleteAsync(userId);
+    return deleted ? Results.NoContent() : Results.NotFound();
 })
 .WithName("DeleteUser")
 .WithOpenApi();
 
-// Add gold to user (with lock for safety)
+// Add gold to user (with lock)
 app.MapPost("/api/users/{userId:long}/add-gold", async (
     ulong userId,
     int amount,
-    AppDbContext dbContext,
+    UserService userService,
     DbLockService lockService,
     ILogger<Program> logger) =>
 {
     var result = await lockService.ExecuteWithLockAsync(userId, async () =>
     {
-        var user = await dbContext.Users.FindAsync(userId);
+        // 1. Load — DB direct (ChangeTracker tracked)
+        var user = await userService.LoadAsync(userId);
         if (user is null)
-        {
             return Results.NotFound(new { error = "User not found" });
-        }
 
+        // 2. Process — in-memory only
         user.Gold += amount;
-        user.UpdatedAt = DateTime.UtcNow;
-        await dbContext.SaveChangesAsync();
 
-        logger.LogInformation("Added {Amount} gold to user {UserId}. New balance: {Gold}", amount, userId, user.Gold);
+        // 3. Save — DB save + cache invalidation
+        await userService.SaveAsync(user);
+
+        logger.LogInformation("Added {Amount} gold to user {UserId}. New balance: {Gold}",
+            amount, userId, user.Gold);
         return Results.Ok(new { userId, newGold = user.Gold, addedAmount = amount });
     });
 

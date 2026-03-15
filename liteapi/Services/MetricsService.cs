@@ -97,6 +97,47 @@ public class MetricsService
         PacketProcessingTotal.WithLabels(format, endpoint).Inc();
     }
 
+    // Cache tracking methods
+    private static readonly Counter CacheHitsTotal = Metrics.CreateCounter(
+        "mini_server_cache_hits_total",
+        "Total number of cache hits",
+        new CounterConfiguration
+        {
+            LabelNames = new[] { "key_prefix" }
+        });
+
+    private static readonly Counter CacheMissesTotal = Metrics.CreateCounter(
+        "mini_server_cache_misses_total",
+        "Total number of cache misses",
+        new CounterConfiguration
+        {
+            LabelNames = new[] { "key_prefix" }
+        });
+
+    private static readonly Histogram CacheOperationDuration = Metrics.CreateHistogram(
+        "mini_server_cache_operation_duration_seconds",
+        "Cache operation duration in seconds",
+        new HistogramConfiguration
+        {
+            LabelNames = new[] { "operation" },
+            Buckets = Histogram.ExponentialBuckets(0.0001, 2, 10) // 0.1ms to ~100ms
+        });
+
+    public void IncrementCacheHit(string keyPrefix)
+    {
+        CacheHitsTotal.WithLabels(keyPrefix).Inc();
+    }
+
+    public void IncrementCacheMiss(string keyPrefix)
+    {
+        CacheMissesTotal.WithLabels(keyPrefix).Inc();
+    }
+
+    public IDisposable TrackCacheOperationDuration(string operation)
+    {
+        return CacheOperationDuration.WithLabels(operation).NewTimer();
+    }
+
     // User tracking methods
     public void SetActiveUsers(int count)
     {

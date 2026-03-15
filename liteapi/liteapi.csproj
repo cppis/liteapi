@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="MessagePack" Version="3.1.4" />
     <PackageReference Include="MessagePack.AspNetCoreMvcFormatter" Version="3.1.4" />
@@ -16,6 +17,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.5" />
     <PackageReference Include="MySqlConnector" Version="2.5.0" />
     <PackageReference Include="NetEscapades.Configuration.Yaml" Version="3.1.0" />
     <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />

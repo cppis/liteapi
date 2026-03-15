@@ -1,0 +1,37 @@
+@host = http://localhost:5000
+
+### 1. Create user
+POST {{host}}/api/users
+Content-Type: application/json
+
+{"username": "cache_test", "email": "cache@test.com"}
+
+### 2. Get user (cache miss → DB → cache set)
+GET {{host}}/api/users/1
+
+### 3. Get same user again (cache hit → no DB query)
+GET {{host}}/api/users/1
+
+### 4. Update user (Load → Process → Save → cache invalidation)
+PUT {{host}}/api/users/1
+Content-Type: application/json
+
+{"username": "cache_test_updated", "email": "cache@test.com", "level": 1, "experience": 0, "gold": 0}
+
+### 5. Get user after update (cache miss → fresh data from DB)
+GET {{host}}/api/users/1
+
+### 6. Add gold (Load → Process → Save → cache invalidation)
+POST {{host}}/api/users/1/add-gold?amount=100
+
+### 7. Get user after add-gold (cache miss → fresh data)
+GET {{host}}/api/users/1
+
+### 8. Get all users (cache miss → DB → cache set with 30s TTL)
+GET {{host}}/api/users
+
+### 9. Health check (Redis status)
+GET {{host}}/health
+
+### 10. Prometheus metrics (cache hit/miss counters)
+GET {{host}}/metrics

@@ -31,3 +31,9 @@ ConnectionStrings:
 Lock:
   TimeoutSeconds: 30
   Prefix: "api"
+
+Redis:
+  Connection: "localhost:6379"
+  InstanceName: "liteapi:"
+  DefaultTTLSeconds: 300
+  ListTTLSeconds: 30
