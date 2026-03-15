@@ -37,13 +37,28 @@
 - **Grafana 연동**: `/metrics` 엔드포인트로 실시간 모니터링
 - **타입 지원**: Counter, Gauge, Histogram, Summary
 
-### 6. xUnit 단위 테스트
-- **높은 커버리지**: 48/53 테스트 통과 (90.6%)
+### 6. Redis 캐싱
+- **Cache-Aside 패턴**: 읽기 시 캐시 → DB 폴백, 쓰기 시 DB 저장 → 캐시 무효화
+- **캐시 장애 내성**: 모든 캐시 예외를 CacheService에서 흡수, Redis 장애 시 DB로 자동 폴백
+- **데이터 유형별 정책**: 단일 엔티티 TTL 300초(쓰기 시 즉시 삭제), 목록 TTL 30초(무효화 안 함)
+- **트랜잭션 연동**: 캐시 무효화는 반드시 DB 트랜잭션 커밋 이후에 수행
+- **헬스체크**: Redis 장애 시 `Degraded`로 보고 (서비스 전체를 `Unhealthy`로 만들지 않음)
+- **Prometheus 메트릭**: 캐시 히트/미스 카운터, 작업별 소요 시간 히스토그램
+
+### 7. Load → Process → Save 패턴
+- **3단계 아키텍처**: 모든 API 엔드포인트가 Load(데이터 조회) → Process(인메모리 로직) → Save(DB 저장+캐시 무효화)를 따름
+- **읽기/쓰기 Load 분리**: 읽기 전용은 캐시 경유(`GetByIdAsync`, `AsNoTracking`), 쓰기용은 DB 직접 조회(`LoadAsync`, ChangeTracker 추적)
+- **Process 격리**: 비즈니스 로직은 인메모리 객체만 조작, DB/캐시에 접근하지 않음
+- **Lock 통합**: 쓰기 작업에서 `DbLockService`가 Load → Process → Save 전체를 감쌈
+- **서비스 캡슐화**: 엔드포인트는 `UserService`만 호출하며 캐시 존재를 알지 못함
+
+### 8. xUnit 단위 테스트
+- **높은 커버리지**: 79/84 테스트 통과 (94%)
 - **Moq 프레임워크**: 의존성 모킹으로 격리된 테스트
 - **FluentAssertions**: 읽기 쉬운 assertion 문법
 - **InMemory DB**: 실제 DB 없이 빠른 테스트 실행
 
-### 7. YAML 기반 설정 파일
+### 9. YAML 기반 설정 파일
 - **계층적 구조**: YAML의 들여쓰기로 설정 그룹화
 - **환경별 분리**: `appsettings.yaml` + `appsettings.Development.yaml`
 - **타입 안전성**: C# 클래스로 강타입 바인딩

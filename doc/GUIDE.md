@@ -2122,6 +2122,146 @@ Lock:
 }
 ```
 
+#### 4. Redis 캐싱
+
+**핵심 원칙: 캐시 장애가 서비스 장애가 되어서는 안 된다.**
+
+Redis는 성능 최적화 수단이며, 핵심 의존성이 아니다. 어떤 캐시 장애가 발생하더라도 DB 직접 조회로 정상 동작해야 한다.
+
+**캐시 전략 — Cache-Aside 패턴:**
+```
+읽기: 캐시 조회 → 히트 시 반환 / 미스 시 DB 조회 → 캐시 저장 → 반환
+쓰기: DB 저장 → 캐시 무효화 (삭제)
+```
+
+**데이터 유형별 정책:**
+
+| 유형 | 캐시 키 | TTL | 무효화 | 이유 |
+|------|---------|-----|--------|------|
+| 단일 엔티티 | `user:{id}` | 300초 | 쓰기 시 즉시 삭제 | 재화/레벨 등 즉시 반영 필요 |
+| 목록/랭킹 | `users:all` | 30초 | **안 함** (TTL 만료 의존) | stale 허용, 무효화 비용 제거 |
+
+**에러 처리 — CacheService 한 곳에서 예외 흡수:**
+
+| 메서드 | 실패 시 동작 |
+|--------|-------------|
+| `GetAsync` | `default` 반환 → 호출자가 DB 조회 |
+| `SetAsync` | 무시 → 다음 요청에서 재시도 |
+| `RemoveAsync` | 무시 → TTL에 의해 자연 만료 |
+
+**Redis 장애 시 서비스 영향: 없음** (성능 저하만 발생). 헬스체크에서 `Degraded`로 보고.
+
+#### 5. Transaction (트랜잭션 전략)
+
+**원칙: 캐시 무효화는 반드시 트랜잭션 커밋 이후에 수행한다.**
+
+DB 저장과 캐시 무효화는 원자적으로 묶을 수 없다 (Redis와 MySQL은 별개 시스템). 따라서 다음 순서를 보장한다:
+
+```
+1. BeginTransaction       ← 트랜잭션 시작
+2. SaveChangesAsync       ← DB에 변경 반영
+3. CommitAsync            ← 트랜잭션 확정
+4. Cache RemoveAsync      ← 캐시 무효화 (커밋 성공 후)
+```
+
+**이 순서가 중요한 이유:**
+- 커밋 **전에** 캐시를 삭제하면: 다른 요청이 아직 커밋되지 않은 이전 데이터를 DB에서 읽어 캐시에 넣을 수 있음 (stale 캐시 복원)
+- 커밋 **후에** 캐시 삭제가 실패하면: TTL에 의해 자연 만료되므로 문제 없음
+
+**장애 시나리오:**
+
+| 시점 | 장애 | 결과 |
+|------|------|------|
+| SaveChangesAsync 실패 | DB 예외 | 트랜잭션 롤백, 캐시 변경 없음. **정상** |
+| CommitAsync 실패 | DB 커밋 예외 | 트랜잭션 롤백, 캐시 변경 없음. **정상** |
+| RemoveAsync 실패 | Redis 예외 | DB 커밋 완료, TTL 만료에 의존. **정상** |
+
+**코드 예시:**
+```csharp
+public async Task SaveAsync(User user)
+{
+    user.UpdatedAt = DateTime.UtcNow;
+
+    await using var transaction = await _db.Database.BeginTransactionAsync();
+    await _db.SaveChangesAsync();
+    await transaction.CommitAsync();
+
+    // 커밋 성공 후에만 캐시 무효화
+    await _cache.RemoveAsync(UserKey(user.UserId));
+}
+```
+
+**다중 엔티티 트랜잭션** (예: 골드 이체):
+```csharp
+public async Task TransferGoldAsync(ulong fromId, ulong toId, long amount)
+{
+    var from = await _db.Users.FindAsync(fromId);
+    var to = await _db.Users.FindAsync(toId);
+
+    from!.Gold -= amount;
+    to!.Gold += amount;
+
+    await using var transaction = await _db.Database.BeginTransactionAsync();
+    await _db.SaveChangesAsync();
+    await transaction.CommitAsync();
+
+    // 커밋 후 양쪽 캐시 모두 무효화
+    await _cache.RemoveAsync(UserKey(fromId));
+    await _cache.RemoveAsync(UserKey(toId));
+}
+```
+
+#### 6. Load → Process → Save 패턴
+
+모든 API 엔드포인트는 3단계로 실행된다:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      Endpoint                           │
+│                                                         │
+│  1. Load    ─ 캐시/DB에서 필요한 데이터를 가져옴          │
+│                         ↓                               │
+│  2. Process ─ 순수 인메모리 로직 (DB/캐시 접근 없음)      │
+│                         ↓                               │
+│  3. Save    ─ DB 저장 + 캐시 무효화를 한 번에 수행        │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Load 메서드 — 용도에 따라 구분:**
+
+| 메서드 | 용도 | 캐시 사용 | ChangeTracker |
+|--------|------|----------|---------------|
+| `GetByIdAsync` | 읽기 전용 | 캐시 → DB 폴백 | `AsNoTracking` |
+| `GetAllAsync` | 목록 조회 | 캐시(30초) → DB 폴백 | `AsNoTracking` |
+| `LoadAsync` | 쓰기용 | 사용 안 함 (DB 직접) | 추적됨 |
+
+**설계 핵심:**
+- **읽기 전용 Load** (`GetByIdAsync`): 캐시 히트 시 DB를 거치지 않음. `AsNoTracking`으로 EF Core 오버헤드 제거
+- **쓰기용 Load** (`LoadAsync`): 캐시를 거치지 않고 DB 직접 조회. ChangeTracker가 엔티티를 추적하므로 Process 단계에서 프로퍼티만 수정하면 Save에서 자동 반영
+- **Process**: 엔드포인트에서 인메모리 객체만 조작. DB/캐시에 절대 접근하지 않음
+- **Save**: DB 트랜잭션 커밋 후 캐시 무효화. 목록 캐시는 무효화하지 않음 (TTL 만료)
+
+**Lock과의 관계 — 쓰기 작업에서 Lock은 전체를 감싼다:**
+
+```
+Lock Acquire
+  └─ 1. Load    (DB에서 조회, ChangeTracker 추적)
+  └─ 2. Process (인메모리 수정)
+  └─ 3. Save    (DB 저장 + 캐시 무효화)
+Lock Release
+```
+
+**엔드포인트별 패턴 요약:**
+
+| 엔드포인트 | Load | Process | Save | Lock |
+|-----------|------|---------|------|------|
+| `GET /api/users/{id}` | `GetByIdAsync` (캐시→DB) | — | — | — |
+| `GET /api/users` | `GetAllAsync` (캐시→DB) | — | — | — |
+| `POST /api/users` | — | — | `CreateAsync` | — |
+| `PUT /api/users/{id}` | `LoadAsync` (DB직접) | 프로퍼티 수정 | `SaveAsync` | ✅ |
+| `DELETE /api/users/{id}` | `DeleteAsync` (내부 처리) | — | — | — |
+| `POST /users/{id}/add-gold` | `LoadAsync` (DB직접) | Gold 증가 | `SaveAsync` | ✅ |
+
 ### 빌드 및 실행
 
 ```bash
