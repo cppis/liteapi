@@ -33,6 +33,7 @@ x86/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
